@@ -63,22 +63,34 @@ exports.main = async (event, context) => {
 
     // 检查并调整图片尺寸 (Wan2.5 要求至少 384x384)
     try {
+      console.log("Starting image processing...");
       const image = await Jimp.read(buffer);
       const minSize = 384;
       const { width, height } = image.bitmap;
+      console.log(`Original image size: ${width}x${height}`);
 
       if (width < minSize || height < minSize) {
-        console.log(`Image size ${width}x${height} is too small, resizing to fit min ${minSize}...`);
-        // 计算缩放比例，确保最小边至少为 384
+        console.log(`Image is too small (<${minSize}), resizing...`);
+        
+        // 计算缩放比例
         const scale = Math.max(minSize / width, minSize / height);
-        image.scale(scale);
+        // 向上取整，确保至少是 minSize
+        const targetWidth = Math.ceil(width * scale);
+        const targetHeight = Math.ceil(height * scale);
+
+        // 使用 resize 明确指定尺寸
+        image.resize(targetWidth, targetHeight);
         
         // 获取新的 buffer
         buffer = await image.getBufferAsync(Jimp.MIME_PNG);
-        console.log(`Resized to ${image.bitmap.width}x${image.bitmap.height}`);
+        console.log(`Resized to ${targetWidth}x${targetHeight}`);
+      } else {
+        console.log("Image size is sufficient.");
       }
     } catch (err) {
       console.error("Image processing failed:", err);
+      // 如果图片处理失败，抛出错误
+      throw new Error("图片预处理失败: " + err.message);
     }
 
     // 转换为 Base64 Data URI
@@ -124,7 +136,7 @@ exports.main = async (event, context) => {
     console.error(error);
     return {
       success: false,
-      msg: '调用 AI 服务失败',
+      msg: '调用 AI 服务失败: ' + error.message,
       error: error.message,
       detail: error.response ? error.response.data : null
     };
