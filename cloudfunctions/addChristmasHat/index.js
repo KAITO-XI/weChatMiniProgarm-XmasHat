@@ -61,15 +61,15 @@ exports.main = async (event, context) => {
     });
     let buffer = res.fileContent;
 
-    // 检查并调整图片尺寸 (Wan2.5 要求至少 384x384)
+    // 检查并调整图片尺寸 (Wanx2.1 要求至少 256x256)
     try {
       const image = await Jimp.read(buffer);
-      const minSize = 384;
+      const minSize = 256;
       const { width, height } = image.bitmap;
 
       if (width < minSize || height < minSize) {
         console.log(`Image size ${width}x${height} is too small, resizing to fit min ${minSize}...`);
-        // 计算缩放比例，确保最小边至少为 384
+        // 计算缩放比例，确保最小边至少为 256
         const scale = Math.max(minSize / width, minSize / height);
         image.scale(scale);
         
@@ -85,19 +85,24 @@ exports.main = async (event, context) => {
     const base64Image = `data:image/png;base64,${buffer.toString('base64')}`;
 
     // 构造提示词
-    const finalPrompt = prompt ? `${prompt}, 戴着圣诞帽` : "戴着红色的圣诞帽, festive atmosphere, christmas hat";
+    // description_edit 模式下，提示词应该是对目标图片的完整描述，建议使用英文
+    const finalPrompt = prompt 
+        ? `${prompt}, wearing a red Christmas hat, festive atmosphere` 
+        : "A person wearing a red Christmas hat, festive atmosphere";
 
     // 2. 发起生成任务
     const submitResponse = await axios.post(
       'https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis',
       {
-        model: "wan2.5-i2i-preview", 
+        model: "wanx2.1-imageedit", 
         input: {
+          function: "description_edit",
           prompt: finalPrompt,
-          images: [base64Image]
+          base_image_url: base64Image
         },
         parameters: {
-          n: 1
+          n: 1,
+          ref_strength: 0.5 // 尝试调整参考图强度，避免生成结果与原图一致
         }
       },
       {
