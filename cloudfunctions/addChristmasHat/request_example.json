@@ -1,0 +1,23 @@
+{
+  "model": "wanx2.1-imageedit",
+  "input": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+          },
+          {
+            "text": "戴着红色的圣诞帽, festive atmosphere, christmas hat"
+          }
+        ]
+      }
+    ]
+  },
+  "parameters": {
+    "size": "1024*1024",
+    "n": 1,
+    "ref_strength": 0.5
+  }
+}

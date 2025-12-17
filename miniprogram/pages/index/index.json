@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "带上圣诞帽",
+  "usingComponents": {
+    "cloud-tip-modal": "/components/cloudTipModal/index"
+  }
+}

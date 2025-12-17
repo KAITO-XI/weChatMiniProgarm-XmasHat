@@ -1,0 +1,33 @@
+<view class="container">
+  <view class="header">
+    <text class="title">🎄 一键圣诞帽 🎅</text>
+    <text class="subtitle">上传照片，让 AI 为你戴上圣诞帽</text>
+  </view>
+
+  <view class="upload-section">
+    <view class="image-box" bindtap="chooseImage" wx:if="{{!selectedImage}}">
+      <text class="plus-icon">+</text>
+      <text>点击上传图片</text>
+    </view>
+    <image class="preview-image" src="{{selectedImage}}" mode="aspectFit" wx:else bindtap="chooseImage"></image>
+  </view>
+
+  <view class="input-section">
+    <input class="prompt-input" placeholder="输入额外提示词 (可选)" bindinput="onInputChange" value="{{prompt}}" />
+  </view>
+
+  <view class="action-section">
+    <button class="btn-generate" bindtap="generateChristmasHat" loading="{{loading}}" disabled="{{loading || !selectedImage}}">
+      {{loading ? '正在生成中...' : '一键戴上圣诞帽'}}
+    </button>
+  </view>
+
+  <view class="result-section" wx:if="{{resultImage}}">
+    <text class="result-title">生成结果</text>
+    <image class="result-image" src="{{resultImage}}" mode="aspectFit" bindtap="previewResult"></image>
+    <view class="result-actions">
+      <button class="btn-secondary" bindtap="saveImage">保存到相册</button>
+      <button class="btn-secondary" bindtap="reset">重新开始</button>
+    </view>
+  </view>
+</view>
