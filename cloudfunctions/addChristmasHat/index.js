@@ -10,6 +10,10 @@ const ARK_API_URL = 'https://ark.cn-beijing.volces.com/api/plan/v3/images/genera
 const ARK_API_KEY = process.env.ARK_API_KEY;
 const ARK_MODEL = 'doubao-seedream-5.0-flash';
 
+// 每用户每日生成次数上限 (宽松兜底, 防接口被恶意刷量/反代滥用, 正常用户基本碰不到)
+// 用量记录在云数据库 gen_usage 集合 (需在云开发控制台创建, 未创建时不限流仅告警)
+const DAILY_LIMIT = 99;
+
 exports.main = async (event, context) => {
   const { fileID, prompt } = event;
 
@@ -28,6 +32,39 @@ exports.main = async (event, context) => {
           success: false,
           msg: `参数错误：未接收到 fileID。`
       };
+    }
+
+    // 每用户每日生成次数限制 (按北京时间自然日计)
+    const openid = cloud.getWXContext().OPENID;
+    const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    const usageId = `gen_${openid}_${today}`;
+    try {
+      const db = cloud.database();
+      let count = 0;
+      try {
+        const got = await db.collection('gen_usage').doc(usageId).get();
+        count = got.data.count || 0;
+      } catch (e) { /* 文档不存在, 视为今日首次 */ }
+
+      if (count >= DAILY_LIMIT) {
+        return {
+          success: false,
+          msg: `今日生成次数已达上限（每人每天 ${DAILY_LIMIT} 次），明天再来吧~`
+        };
+      }
+      if (count === 0) {
+        try {
+          await db.collection('gen_usage').add({ data: { _id: usageId, count: 1 } });
+        } catch (e) {
+          // 并发时文档已被同时创建, 退回累加
+          await db.collection('gen_usage').doc(usageId).update({ data: { count: db.command.inc(1) } });
+        }
+      } else {
+        await db.collection('gen_usage').doc(usageId).update({ data: { count: db.command.inc(1) } });
+      }
+    } catch (e) {
+      // 用量统计失败不阻塞生成 (例如 gen_usage 集合未创建)
+      console.warn(`用量统计失败(不影响本次生成, 建议在云开发控制台创建 gen_usage 集合): ${e.message}`);
     }
 
     // 1. 从云存储下载图片
@@ -74,8 +111,10 @@ exports.main = async (event, context) => {
         console.log("Image size is sufficient.");
       }
 
-      // 根据输入图片宽高比计算输出尺寸 (该端点要求面积至少 921600 像素 = 960x960)
+      // 根据输入图片宽高比计算输出尺寸
+      // 端点要求: 输出面积 >= 921600 像素 (960x960); 极端宽高比时保证最短边, 避免触发维度下限
       const MIN_AREA = 960 * 960;
+      const MIN_DIM = 512;
       const MAX_DIM = 2048;
       let outW = image.bitmap.width;
       let outH = image.bitmap.height;
@@ -84,10 +123,17 @@ exports.main = async (event, context) => {
         outW = Math.round(outW * scale);
         outH = Math.round(outH * scale);
       }
+      if (Math.min(outW, outH) < MIN_DIM) {
+        const scale = MIN_DIM / Math.min(outW, outH);
+        outW = Math.ceil(outW * scale);
+        outH = Math.ceil(outH * scale);
+      }
       if (outW * outH < MIN_AREA) {
         const scale = Math.sqrt(MIN_AREA / (outW * outH));
-        outW = Math.round(outW * scale);
-        outH = Math.round(outH * scale);
+        outW = Math.ceil(outW * scale);
+        outH = Math.ceil(outH * scale);
+        // 兜底: 逐像素取整仍可能差几个像素
+        while (outW * outH < MIN_AREA) outW += 1;
       }
       outputSize = `${outW}x${outH}`;
       console.log(`Output size: ${outputSize}`);
@@ -130,6 +176,13 @@ exports.main = async (event, context) => {
     const imageUrl = generateResponse.data.data[0].url;
     if (!imageUrl) {
         throw new Error('API 未返回图片 URL: ' + JSON.stringify(generateResponse.data));
+    }
+
+    // 生成成功后删除云存储中的输入图片, 避免存储无限累积 (失败不影响结果)
+    try {
+      await cloud.deleteFile({ fileList: [fileID] });
+    } catch (e) {
+      console.warn(`删除输入图片失败(不影响结果): ${e.message}`);
     }
 
     return {
