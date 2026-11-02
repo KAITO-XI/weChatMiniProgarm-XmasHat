@@ -48,6 +48,9 @@ Page({
 
     this.setData({ loading: true });
 
+    // 生成耗时与图片大小/网络相关, 固定预估不准, 改为显示实际已用时间
+    let loadingTimer = null;
+
     try {
       wx.showLoading({ title: '上传图片中...' });
       
@@ -68,18 +71,13 @@ Page({
       
       // console.log('Image uploaded to:', tempFileURL);
 
-      // 估算时间
-      let estimateTime = 15; // 基础时间
-      if (this.data.imgWidth && this.data.imgHeight) {
-        const pixels = this.data.imgWidth * this.data.imgHeight;
-        // 简单估算：每 50万像素增加 5 秒
-        estimateTime += Math.ceil(pixels / 500000) * 5;
-      }
-      if (estimateTime > 60) estimateTime = 60; // 上限显示 60s
+      // 3. 调用云函数生成 (火山方舟同步接口，一次调用直接返回结果)
+      const startTime = Date.now();
+      wx.showLoading({ title: 'AI生成中 0s' });
+      loadingTimer = setInterval(() => {
+        wx.showLoading({ title: `AI生成中 ${Math.floor((Date.now() - startTime) / 1000)}s` });
+      }, 1000);
 
-      wx.showLoading({ title: `AI生成中(约${estimateTime}s)` });
-
-      // 3. 提交任务
       const submitRes = await wx.cloud.callFunction({
         name: 'addChristmasHat',
         data: {
@@ -89,45 +87,18 @@ Page({
       });
 
       if (!submitRes.result.success) {
-        const detailMsg = submitRes.result.detail ? JSON.stringify(submitRes.result.detail) : '';
-        throw new Error((submitRes.result.msg || '提交任务失败') + '\n详细信息: ' + detailMsg);
+        // 详细错误只打到控制台，弹窗只展示用户可读的提示
+        console.error('生成失败详情:', submitRes.result.detail || submitRes.result.error);
+        throw new Error(submitRes.result.msg || '生成失败');
       }
 
-      const taskId = submitRes.result.taskId;
-      console.log('Task submitted, ID:', taskId);
+      console.log('Generated image:', submitRes.result.imageUrl);
 
-      // 4. 轮询任务状态
-      let attempts = 0;
-      const maxAttempts = 60; // 最多轮询 60 次
-      const interval = 3000;  // 每次间隔 3 秒
-      
-      while (attempts < maxAttempts) {
-        attempts++;
-        
-        // 等待
-        await new Promise(resolve => setTimeout(resolve, interval));
-        
-        const checkRes = await wx.cloud.callFunction({
-          name: 'addChristmasHat',
-          data: { taskId: taskId }
-        });
-
-        const status = checkRes.result.status;
-        console.log(`Polling attempt ${attempts} (${attempts * interval / 1000}s): ${status}`);
-
-        if (status === 'SUCCEEDED') {
-          this.setData({
-            resultImage: checkRes.result.imageUrl
-          });
-          wx.hideLoading();
-          return; // 成功结束
-        } else if (status === 'FAILED') {
-          throw new Error(checkRes.result.msg || '生成失败');
-        }
-        // 如果是 PENDING 或 RUNNING，继续循环
-      }
-
-      throw new Error('生成超时，请稍后重试');
+      // 4. 直接展示结果
+      this.setData({
+        resultImage: submitRes.result.imageUrl
+      });
+      wx.hideLoading();
 
     } catch (err) {
       wx.hideLoading();
@@ -138,6 +109,7 @@ Page({
         showCancel: false
       });
     } finally {
+      if (loadingTimer) clearInterval(loadingTimer);
       this.setData({ loading: false });
     }
   },

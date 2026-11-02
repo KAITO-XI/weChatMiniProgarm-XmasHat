@@ -4,54 +4,29 @@ const Jimp = require('jimp')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
-// 阿里云 API Key
-const ALIYUN_API_KEY = 'sk-3589df3d7e7f417e98a83da4bf2ef9fd'; 
+// 火山方舟 (豆包 Seedream) API — Key 从云函数环境变量 ARK_API_KEY 读取, 避免明文入库
+// 配置入口: 微信开发者工具 → 云开发控制台 → 云函数 → addChristmasHat → 环境变量
+const ARK_API_URL = 'https://ark.cn-beijing.volces.com/api/plan/v3/images/generations';
+const ARK_API_KEY = process.env.ARK_API_KEY;
+const ARK_MODEL = 'doubao-seedream-5.0-flash';
 
 exports.main = async (event, context) => {
-  const { fileID, prompt, taskId } = event;
+  const { fileID, prompt } = event;
 
   try {
-    // ==========================================
-    // 模式 1: 查询任务状态 (如果传入了 taskId)
-    // ==========================================
-    if (taskId) {
-      const checkResponse = await axios.get(
-        `https://dashscope.aliyuncs.com/api/v1/tasks/${taskId}`,
-        {
-          headers: { 'Authorization': `Bearer ${ALIYUN_API_KEY}` }
-        }
-      );
-      
-      const taskStatus = checkResponse.data.output.task_status;
-      
-      if (taskStatus === 'SUCCEEDED') {
-        return {
-          success: true,
-          status: 'SUCCEEDED',
-          imageUrl: checkResponse.data.output.results[0].url
-        };
-      } else if (taskStatus === 'FAILED') {
-        return {
-          success: false,
-          status: 'FAILED',
-          msg: '生成失败: ' + JSON.stringify(checkResponse.data.output)
-        };
-      } else {
-        // PENDING or RUNNING
-        return {
-          success: true,
-          status: taskStatus
-        };
-      }
+    if (!ARK_API_KEY) {
+      return {
+        success: false,
+        msg: '未配置 ARK_API_KEY 环境变量，请在云开发控制台为云函数 addChristmasHat 配置后重试。'
+      };
     }
-
     // ==========================================
-    // 模式 2: 提交新任务 (如果传入了 fileID)
+    // 生成图片 (火山方舟为同步接口，直接返回结果)
     // ==========================================
     if (!fileID) {
-      return { 
-          success: false, 
-          msg: `参数错误：未接收到 fileID 或 taskId。` 
+      return {
+          success: false,
+          msg: `参数错误：未接收到 fileID。`
       };
     }
 
@@ -61,11 +36,13 @@ exports.main = async (event, context) => {
     });
     let buffer = res.fileContent;
 
-    // 检查并调整图片尺寸 (Wan2.5 要求至少 384x384)
+    // 检查并调整图片尺寸 (Seedream 要求至少 384x384)
+    let outputSize;
     try {
       console.log("Starting image processing...");
       const image = await Jimp.read(buffer);
       const minSize = 384;
+      const maxSize = 2048;
       const { width, height } = image.bitmap;
       console.log(`Original image size: ${width}x${height}`);
 
@@ -84,9 +61,36 @@ exports.main = async (event, context) => {
         // 获取新的 buffer
         buffer = await image.getBufferAsync(Jimp.MIME_PNG);
         console.log(`Resized to ${targetWidth}x${targetHeight}`);
+      } else if (width > maxSize || height > maxSize) {
+        console.log(`Image is too large (>${maxSize}), resizing...`);
+        
+        // 保持比例缩小到最大边为 1024
+        image.scaleToFit(maxSize, maxSize);
+        
+        // 获取新的 buffer
+        buffer = await image.getBufferAsync(Jimp.MIME_PNG);
+        console.log(`Resized to ${image.bitmap.width}x${image.bitmap.height}`);
       } else {
         console.log("Image size is sufficient.");
       }
+
+      // 根据输入图片宽高比计算输出尺寸 (该端点要求面积至少 921600 像素 = 960x960)
+      const MIN_AREA = 960 * 960;
+      const MAX_DIM = 2048;
+      let outW = image.bitmap.width;
+      let outH = image.bitmap.height;
+      if (outW > MAX_DIM || outH > MAX_DIM) {
+        const scale = MAX_DIM / Math.max(outW, outH);
+        outW = Math.round(outW * scale);
+        outH = Math.round(outH * scale);
+      }
+      if (outW * outH < MIN_AREA) {
+        const scale = Math.sqrt(MIN_AREA / (outW * outH));
+        outW = Math.round(outW * scale);
+        outH = Math.round(outH * scale);
+      }
+      outputSize = `${outW}x${outH}`;
+      console.log(`Output size: ${outputSize}`);
     } catch (err) {
       console.error("Image processing failed:", err);
       // 如果图片处理失败，抛出错误
@@ -99,44 +103,63 @@ exports.main = async (event, context) => {
     // 构造提示词
     const finalPrompt = prompt ? `${prompt}, 戴着圣诞帽` : "戴着红色的圣诞帽, festive atmosphere, christmas hat";
 
-    // 2. 发起生成任务
-    const submitResponse = await axios.post(
-      'https://dashscope.aliyuncs.com/api/v1/services/aigc/image2image/image-synthesis',
+    // 2. 调用火山方舟图片生成接口 (同步返回结果)
+    const generateResponse = await axios.post(
+      ARK_API_URL,
       {
-        model: "wan2.5-i2i-preview", 
-        input: {
-          prompt: finalPrompt,
-          images: [base64Image]
-        },
-        parameters: {
-          n: 1
-        }
+        model: ARK_MODEL,
+        prompt: finalPrompt,
+        image: [base64Image],
+        size: outputSize,          // 输出尺寸跟随输入图片宽高比
+        response_format: 'url',    // 返回图片 URL
+        watermark: false
       },
       {
+        timeout: 55000, // 略小于云函数 60s 超时
         headers: {
-          'Authorization': `Bearer ${ALIYUN_API_KEY}`,
-          'Content-Type': 'application/json',
-          'X-DashScope-Async': 'enable'
+          'Authorization': `Bearer ${ARK_API_KEY}`,
+          'Content-Type': 'application/json'
         }
       }
     );
 
-    if (submitResponse.status !== 200) {
-        throw new Error('API submission failed');
+    if (generateResponse.status !== 200) {
+        throw new Error('API request failed');
     }
 
-    // 仅返回 taskId，由前端进行轮询
+    const imageUrl = generateResponse.data.data[0].url;
+    if (!imageUrl) {
+        throw new Error('API 未返回图片 URL: ' + JSON.stringify(generateResponse.data));
+    }
+
     return {
         success: true,
-        taskId: submitResponse.data.output.task_id,
-        status: 'SUBMITTED'
+        status: 'SUCCEEDED',
+        imageUrl: imageUrl
     };
 
   } catch (error) {
     console.error(error);
+    const arkError = error.response && error.response.data && error.response.data.error;
+    const errCode = arkError ? arkError.code : '';
+
+    // 将常见的 Ark 错误码翻译成用户能理解的提示
+    let msg = '调用 AI 服务失败: ' + error.message;
+    if (errCode.indexOf('SensitiveContentDetected') !== -1) {
+      msg = '生成结果未通过内容审核（可能涉及版权或敏感内容）。请更换为自己的照片，或调整提示词后重试。';
+    } else if (errCode === 'AuthenticationError' || errCode === 'InvalidApiKey') {
+      msg = 'API Key 无效或已过期，请检查火山方舟密钥配置。';
+    } else if (errCode === 'TooManyRequests' || (error.response && error.response.status === 429)) {
+      msg = '请求太频繁，请稍后再试。';
+    } else if (errCode === 'InvalidParameter') {
+      msg = '请求参数错误: ' + (arkError.message || error.message);
+    } else if (error.code === 'ECONNABORTED') {
+      msg = '生成超时，请稍后重试。';
+    }
+
     return {
       success: false,
-      msg: '调用 AI 服务失败: ' + error.message,
+      msg: msg,
       error: error.message,
       detail: error.response ? error.response.data : null
     };
